@@ -5,9 +5,9 @@ require_relative 'test_helper'
 
 class TestWorker < Minitest::Test
   def test_worker_start
-    ar, aw = IO.pipe # for app usage
     wr, ww = IO.pipe # for worker control
-    worker = Coworker::Worker.new(ww) { ar.close; aw << "foobar\n"; aw.close; sleep 0.1 }
+    ar, aw = IO.pipe # for app usage
+    worker = Coworker::Worker.new(ww) { |w| ar.close; aw << "foobar\n"; aw.close; sleep 0.1 }
 
     assert_equal 1, worker.generation
 
@@ -24,15 +24,54 @@ class TestWorker < Minitest::Test
     assert_pattern {msgs[1] => pat }
 
     sleep 0.05
-    child_pid, status = Process.wait2(msgs[1][1].to_i)
-    assert_equal msgs[1][1].to_i, child_pid
-    assert_equal 0, status.exitstatus
+    # worker parent will have already been reaped
+    assert_raises(Errno::ECHILD) { Process.wait2(msgs[1][1].to_i) }
 
     aw.close
     msg = ar.read
     assert_equal "foobar\n", msg
   ensure
     (Process.wait(pid) rescue nil) if pid
+  end
 
+  def test_next_generation
+    _wr, ww = IO.pipe
+    worker = Coworker::Worker.new(ww) { sleep 1 }
+    
+    assert_equal 1, worker.generation
+
+    n = worker.next_generation
+    assert_kind_of Coworker::Worker, n
+    assert_equal 2, n.generation
+  end
+
+  def test_usr1_signal
+    wr, ww = IO.pipe
+    worker = Coworker::Worker.new(ww) { sleep 0.2 }
+
+    pid1 = worker.start
+    sleep 0.05
+
+    ww.close
+
+    # consume reap/ping messages from forked process
+    2.times { wr.gets }
+
+    Process.kill('SIGUSR1', pid1)
+    sleep 0.05
+
+    msgs = 2.times.map { wr.gets(chomp: true) }.map { it.split(':') }.sort_by { it.first }
+
+    pat = ['ping', Integer, '2']
+    assert_pattern {msgs[0] => pat }
+
+    pat = ['reap', Integer]
+    assert_pattern {msgs[1] => pat }
+
+    pid2 = msgs[0][1].to_i
+    assert_nil Process.wait2(pid2, Process::WNOHANG)
+  ensure
+    (Process.wait(pid1) rescue nil) if pid1
+    (Process.wait(pid2) rescue nil) if pid2
   end
 end
