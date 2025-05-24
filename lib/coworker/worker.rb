@@ -2,7 +2,7 @@
 
 module Coworker
   class Worker
-    attr_reader :generation
+    attr_reader :fd, :generation
 
     def initialize(conn, generation = 1, &app)
       @fd = conn.fileno

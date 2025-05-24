@@ -1,5 +1,7 @@
 # frozen_string_literal: true
- 
+
+require_relative './worker'
+
 module Coworker
   CLUSTER_SIZE = 2
 
@@ -11,13 +13,13 @@ module Coworker
       @leader_pid = nil
       @workers = {}
       @messages = Queue.new
-      @socket_supervisor, @socket_worker = UNIXSocket.socketpair(:SOCK_SEQPACKET)
+      @pipe_r, @pipe_w = IO.pipe
+      # @socket_supervisor, @socket_worker = UNIXSocket.socketpair(:SOCK_SEQPACKET)
     end
 
     def run
       ChildSubreaper.enable
 
-      p supervisor_pid: Process.pid
       trap('SIGUSR1') { @messages.push 'respawn' }
       start_message_parser
       while true
@@ -36,6 +38,15 @@ module Coworker
       kill_all_workers
     end
 
+    def stop
+      kill_all_workers
+    end
+
+    def check_liveness
+      process_received_messages
+      reap_unresponsive_workers
+    end
+
     private
 
     def start_message_parser
@@ -48,40 +59,48 @@ module Coworker
     end
 
     def recv_msg_loop
+      @pipe_w.close
       loop do
-        msg = @socket_supervisor.gets(chomp: true)
+        msg = recv_msg
         @messages.push msg
       end
     end
 
-    def send_msg(msg)
-      @socket_supervisor.write("#{msg}\n")
+    def recv_msg
+      @pipe_r.gets(chomp: true)
     end
 
     WORKER_PING_TTL = 15
 
-    def check_liveness
-      now = Time.now.to_i
+    def process_received_messages
       while !@messages.empty?
         msg = @messages.shift
-        p msg: msg
-        case msg
-        when /ping:(\d+):(\d+)/
-          m = Regexp.last_match
-          pid = m[1].to_i
-          generation = m[2].to_i
-          @workers[pid] = { stamp: now, generation: generation }
-        when /reap:(\d+)/
-          m = Regexp.last_match
-          pid = m[1].to_i
-          reap_process(pid)
+        parts = msg.split(':')
+        case parts[0]
+        when 'ping'
+          handle_ping(*parts[1..2].map(&:to_i))
+        when 'reap'
+          handle_reap(parts[1].to_i)
         when 'respawn'
-          respawn
+          handle_respawn
         end
-      end
+      end      
+    end
 
-      # check unresponsive workers
-      deadline = now - WORKER_PING_TTL
+    def handle_ping(pid, generation)
+      @workers[pid] = { stamp: Time.now.to_i, generation: generation }
+    end
+
+    def handle_reap(pid)
+      reap_process(pid)
+    end
+
+    def handle_respawn
+      respawn
+    end
+
+    def reap_unresponsive_workers
+      deadline = Time.now.to_i - WORKER_PING_TTL
       unresponsive_pids = @workers.each_with_object([]) { |(k, v), o| o << k if v[:stamp] < deadline }
       unresponsive_pids.each do |pid|
         kill_process(pid)
@@ -107,7 +126,6 @@ module Coworker
     end
 
     def reap_process(pid, timeout = 10)
-      p reap: pid
       t0 = Time.now
       while Time.now - t0 < timeout
         wpid, _status = Process.wait2(pid, Process::WNOHANG)
@@ -124,15 +142,14 @@ module Coworker
 
     def kill_all_workers(timeout = 10)
       t0 = Time.now
-      puts "Terminating all workers..."
       pids = @workers.keys
       pids.each { Process.kill('SIGTERM', it) rescue nil }
 
       while Time.now - t0 < timeout
         wpid, _status = Process.wait2(-1, Process::WNOHANG)
         if wpid
-          p reap: wpid
           pids.delete(wpid)
+          @workers.delete(wpid)
           return if pids.empty?
         else
           sleep 0.25
@@ -142,6 +159,7 @@ module Coworker
       pids.each do
         Process.kill('SIGKILL', it) rescue nil
         Process.wait(it)
+        @workers.delete(it)
       end
     rescue Errno::ECHILD
       # ignore
@@ -153,18 +171,17 @@ module Coworker
 
     def select_leader
       @leader_pid = @workers.keys.sort_by { @workers[it][:generation] }.last
-      p select_leader: @leader_pid
-      Process.kill('SIGUSR1', @leader_pid)
-      @leader_pid
     end
 
+    # returns [void]
     def spawn_worker
-      if @leader_pid
-        send_msg('spawn')
-        return nil
-      end
+      return send_signal('SIGUSR1', @leader_pid) if @leader_pid
+        
+      worker_class.new(@pipe_w, &@app).start
+    end
 
-      Worker.new(@socket_worker, &@app).start
+    def worker_class
+      @opts[:worker_class] ||= Worker
     end
 
     def respawn
@@ -178,14 +195,17 @@ module Coworker
       while (pid = pids_to_replace.shift)
         p respawn: 4, pid: pid
         size_before = @workers.size
-        send_msg('spawn')
-        # Process.kill('SIGUSR1', @leader_pid)
+        send_signal('SIGUSR1', @leader_pid)
         sleep 0.1 while @workers.size > size_before
         kill_process(pid)
       end
 
       new_leader = select_leader
       p respawn: 5, new_leader: new_leader
+    end
+
+    def send_signal(sig, pid)
+      Process.kill(sig, pid)
     end
   end
 end
