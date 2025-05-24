@@ -17,15 +17,14 @@ class TestWorker < Minitest::Test
 
     msgs = 2.times.map { wr.gets(chomp: true) }.map { it.split(':') }.sort_by { it.first }
 
-    pat = ['ping', pid.to_s, '1']
-    assert_pattern {msgs[0] => pat }
+    assert_equal ['ping', pid.to_s, '1'], msgs[0]
+    assert_equal 'reap', msgs[1][0]
 
-    pat = ['reap', Integer]
-    assert_pattern {msgs[1] => pat }
+    parent_pid = msgs[1][1].to_i
 
     sleep 0.05
     # worker parent will have already been reaped
-    assert_raises(Errno::ECHILD) { Process.wait2(msgs[1][1].to_i) }
+    assert_raises(Errno::ECHILD) { Process.wait2(parent_pid) }
 
     aw.close
     msg = ar.read
@@ -62,13 +61,12 @@ class TestWorker < Minitest::Test
 
     msgs = 2.times.map { wr.gets(chomp: true) }.map { it.split(':') }.sort_by { it.first }
 
-    pat = ['ping', Integer, '2']
-    assert_pattern {msgs[0] => pat }
-
-    pat = ['reap', Integer]
-    assert_pattern {msgs[1] => pat }
-
+    assert_equal 'ping', msgs[0][0]
     pid2 = msgs[0][1].to_i
+    assert_equal '2', msgs[0][2]
+
+    assert_equal 'reap', msgs[1][0]
+
     assert_nil Process.wait2(pid2, Process::WNOHANG)
   ensure
     (Process.wait(pid1) rescue nil) if pid1
