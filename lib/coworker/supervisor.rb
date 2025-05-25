@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative './worker'
+require 'child_subreaper'
 
 module Coworker
   CLUSTER_SIZE = 2
@@ -51,12 +52,11 @@ module Coworker
     end
 
     def stop_message_parser
-      @message_parser_thread.kill
-      @message_parser_thread.join
+      @message_parser_thread&.kill&.join
     end
 
     def recv_msg_loop
-      @pipe_w.close
+      # @pipe_w.close
       loop do
         msg = recv_msg
         @messages.push msg
@@ -168,6 +168,8 @@ module Coworker
 
     def select_leader
       @leader_pid = @workers.keys.sort_by { @workers[it][:generation] }.last
+
+      on_leader_pid_changed
     end
 
     # returns [void]
@@ -184,27 +186,27 @@ module Coworker
     end
 
     def respawn
-      p respawn: 1
       return if !@leader_pid
 
-      p respawn: 2
       pids_to_replace = @workers.keys.select { it != @leader_pid }
 
-      p respawn: 3, pids_to_replace: pids_to_replace
       while (pid = pids_to_replace.shift)
-        p respawn: 4, pid: pid
         size_before = @workers.size
         send_signal('SIGUSR1', @leader_pid)
         sleep 0.1 while @workers.size > size_before
         kill_process(pid)
       end
 
-      new_leader = select_leader
-      p respawn: 5, new_leader: new_leader
+      select_leader
     end
 
     def send_signal(sig, pid)
       Process.kill(sig, pid)
     end
+
+    # event hooks (to be ovcerriden)
+    def on_leader_pid_changed(pid); end
+    def on_spawn_next_generation(pid); end
+    def on_reap(pid); end
   end
 end
