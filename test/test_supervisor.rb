@@ -62,7 +62,6 @@ class TestSupervisor < Minitest::Test
     s = TestSupervisor.new(&app)
 
     pids = 3.times.map { fork(&app) }
-    t0 = Time.now
     s.messages << "ping:#{pids[0]}:1"
     s.messages << "ping:#{pids[1]}:2"
     s.messages << "ping:#{pids[2]}:3"
