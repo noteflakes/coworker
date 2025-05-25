@@ -24,11 +24,8 @@ module Coworker
       start_message_parser
       while true
         sleep 1
-        check_liveness
-        if need_spawn?
-          pid = spawn_worker
-          @workers[pid] = { stamp: Time.now.to_i, generation: 1 } if pid
-        end
+        check_worker_state
+        spawn_worker if need_spawn?
         select_leader if !@leader_pid
       end
     rescue Interrupt
@@ -42,7 +39,7 @@ module Coworker
       kill_all_workers
     end
 
-    def check_liveness
+    def check_worker_state
       process_received_messages
       reap_unresponsive_workers
     end
@@ -177,7 +174,9 @@ module Coworker
     def spawn_worker
       return send_signal('SIGUSR1', @leader_pid) if @leader_pid
         
-      worker_class.new(@pipe_w, &@app).start
+      pid = worker_class.new(@pipe_w, &@app).start
+      @workers[pid] = { stamp: Time.now.to_i, generation: 1 } if pid
+      pid
     end
 
     def worker_class

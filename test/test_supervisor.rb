@@ -15,7 +15,7 @@ class TestSupervisor < Minitest::Test
     attr_reader :fd
   end
 
-  def test_supervisor_check_liveness
+  def test_supervisor_check_worker_state
     ar, aw = IO.pipe
     aw.sync = true
 
@@ -32,7 +32,7 @@ class TestSupervisor < Minitest::Test
     s.messages << "ping:#{pids[0]}:1"
     s.messages << "ping:#{pids[1]}:2"
     s.messages << "ping:#{pids[2]}:3"
-    s.check_liveness
+    s.check_worker_state
 
 
     assert_equal 3, s.workers.size
@@ -42,7 +42,7 @@ class TestSupervisor < Minitest::Test
 
     # check removal of unredsponsive worker
     s.workers[pids[1]][:stamp] = t0.to_i - 60
-    s.check_liveness
+    s.check_worker_state
 
     assert_nil s.workers[pids[1]]
     msg = ar.gets(chomp: true)
@@ -67,7 +67,7 @@ class TestSupervisor < Minitest::Test
     s.messages << "ping:#{pids[1]}:2"
     s.messages << "ping:#{pids[2]}:3"
     
-    s.check_liveness
+    s.check_worker_state
     ret = s.select_leader
 
     assert_equal pids[2], ret
@@ -92,14 +92,14 @@ class TestSupervisor < Minitest::Test
     s.messages << "ping:#{pids[1]}:2"
     s.messages << "ping:#{pids[2]}:3"
     
-    s.check_liveness
+    s.check_worker_state
     s.select_leader
 
     assert_equal pids[2], s.leader_pid
 
     s.workers[pids[2]][:stamp] = t0.to_i - 300
 
-    s.check_liveness
+    s.check_worker_state
     s.select_leader
 
     assert_nil s.workers[pids[2]]
