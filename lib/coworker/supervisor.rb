@@ -169,7 +169,8 @@ module Coworker
     def select_leader
       @leader_pid = @workers.keys.sort_by { @workers[it][:generation] }.last
 
-      on_leader_pid_changed
+      on_leader_pid_changed(@leader_pid)
+      @leader_pid
     end
 
     # returns [void]
